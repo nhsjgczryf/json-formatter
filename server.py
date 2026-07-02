@@ -27,7 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent
 INDEX_FILE = BASE_DIR / "index.html"
 
 MAX_RECORDS = 20000            # 单次响应最多条数
-MAX_JSON_FILE = 512 * 1024 * 1024   # 单文件 .json 上限 (无法流式)
+MAX_JSON_FILE = 128 * 1024 * 1024   # 单文件 .json 上限 (无法流式，解析后对象树通常 3-5×，128 MiB 对普通机器已经吃力)
 MAX_STAT_LINE_SCAN = 8 * 1024 * 1024 * 1024  # stat 时逐行计数的字节上限
 
 

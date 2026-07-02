@@ -857,8 +857,10 @@ function parseLenient(text) {
   }
 }
 
-// Greedy attempt: parse longest valid JSON prefix
+// Greedy attempt: parse longest valid JSON prefix.
+// O(n^2) — hard cap to 10 KB so a big malformed paste doesn't freeze the tab.
 function tryParseFromStart(text) {
+  if (text.length > 10_000) return null;
   for (let i = text.length; i > 0; i--) {
     try {
       const v = JSON.parse(text.slice(0, i));
@@ -902,22 +904,23 @@ function countOf(v) {
 function renderValue(v, key, path, depth) {
   const t = typeOf(v);
   const pathStr = pathToString(path);
-  const isCollapsed = state.collapsed.has(pathStr) || (depth >= 3 && !state.expanded.has(pathStr) && hasManyChildren(v));
-  // hasManyChildren auto-collapses only for the *initial* render; once user touches, collapsed set wins
-  // Simpler: only auto-collapse if depth threshold + not in expanded/collapsed override
-  const autoCollapse = depth >= 3 && hasManyChildren(v)
+  const isContainer = t === 'object' || t === 'array';
+  const n = isContainer ? countOf(v) : 0;
+  // auto-collapse if depth >= 3 OR very wide (protects shallow-but-huge arrays too).
+  const autoCollapse = n > 0
                     && !state.expanded.has(pathStr)
-                    && !state.collapsed.has(pathStr);
+                    && !state.collapsed.has(pathStr)
+                    && (depth >= 3 || n > 200);
   const collapsed = state.collapsed.has(pathStr) || autoCollapse;
 
   const keyHtml = renderKey(key);
   const indent = '<span class="indent" style="width:' + (depth * 18) + 'px"></span>';
 
-  if (t === 'object' || t === 'array') {
-    const n = countOf(v);
+  if (isContainer) {
     const openB = t === 'array' ? '[' : '{';
     const closeB = t === 'array' ? ']' : '}';
-    const childrenHtml = n === 0
+    // Only recurse into children if we're actually going to render them.
+    const childrenHtml = (collapsed || n === 0)
       ? ''
       : renderChildren(v, t, path, depth + 1);
 
@@ -977,17 +980,19 @@ function hasManyChildren(v) {
 }
 
 function renderChildren(v, t, path, depth) {
-  let html = '';
+  const parts = [];
   if (t === 'array') {
     for (let i = 0; i < v.length; i++) {
-      html += renderValue(v[i], i, path.concat(i), depth);
+      parts.push(renderValue(v[i], i, path.concat(i), depth));
     }
   } else {
-    for (const k of Object.keys(v)) {
-      html += renderValue(v[k], k, path.concat(k), depth);
+    const keys = Object.keys(v);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      parts.push(renderValue(v[k], k, path.concat(k), depth));
     }
   }
-  return html;
+  return parts.join('');
 }
 
 function renderKey(key) {
@@ -1162,6 +1167,9 @@ function scheduleParse(immediate) {
   parseTimer = setTimeout(doParse, immediate ? 0 : 200);
 }
 
+const PARSE_SOFT_LIMIT = 10 * 1024 * 1024;   // 10 MB — ask before proceeding
+const PARSE_HARD_LIMIT = 100 * 1024 * 1024;  // 100 MB — refuse outright
+
 function doParse() {
   const text = editor.value;
   state.raw = text;
@@ -1169,9 +1177,31 @@ function doParse() {
 
   if (!text.trim()) {
     state.data = undefined;
+    state._bigOk = false;
     setStatus('就绪', 'idle');
     render();
     return;
+  }
+
+  if (text.length > PARSE_HARD_LIMIT) {
+    state.data = undefined;
+    setStatus('✗ 输入过大 (>' + Math.round(PARSE_HARD_LIMIT / 1024 / 1024) + ' MB)，请改用「数据源」加载文件', 'err');
+    render();
+    return;
+  }
+  if (text.length > PARSE_SOFT_LIMIT) {
+    if (!state._bigOk) {
+      const mb = (text.length / 1024 / 1024).toFixed(1);
+      if (!confirm('输入约 ' + mb + ' MB，格式化可能卡住浏览器。继续？')) {
+        state.data = undefined;
+        setStatus('已取消（输入过大，未格式化）', 'idle');
+        render();
+        return;
+      }
+      state._bigOk = true;
+    }
+  } else {
+    state._bigOk = false;
   }
 
   const result = parseLenient(text);
