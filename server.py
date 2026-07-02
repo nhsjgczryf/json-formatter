@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-json-formatter API: read-only 本机 JSON/JSONL 文件采样服务。
+json-formatter: 单进程 web 服务，同时提供前端页面 + JSON/JSONL 采样 API。
 
+GET  /                              → index.html (前端 UI)
+GET  /api/health                    → {ok: true}
 GET  /api/stat?path=/abs/path       → {ok, format, size, lines?, mtime}
 POST /api/sample  {path, mode, n, k, k2, seed, filter?}
                                      → {ok, records, scanned, matched}
 
-只监听 127.0.0.1:8802，由 nginx 反代 /api/。
-用户就是登录 shell 里的 claudecode，读文件权限 = 该用户。
+默认监听 0.0.0.0:8803，用 env `PORT` / `BIND` 覆盖。
+`/api/*` 只能读服务进程有权限的文件，路径必须是绝对路径。
 """
 import json
 import os
@@ -18,8 +20,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-PORT = 8803
-BIND = "127.0.0.1"
+PORT = int(os.environ.get("PORT", "8803"))
+BIND = os.environ.get("BIND", "0.0.0.0")
+
+BASE_DIR = Path(__file__).resolve().parent
+INDEX_FILE = BASE_DIR / "index.html"
 
 MAX_RECORDS = 20000            # 单次响应最多条数
 MAX_JSON_FILE = 512 * 1024 * 1024   # 单文件 .json 上限 (无法流式)
@@ -257,6 +262,18 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, msg, status=400):
         self._send_json(status, {"ok": False, "error": msg})
 
+    def _send_file(self, path: Path, ctype: str):
+        try:
+            body = path.read_bytes()
+        except FileNotFoundError:
+            return self._err("file not found", 404)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _resolve_path(self, raw):
         raw = (raw or "").strip()
         if not raw:
@@ -279,6 +296,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
+        if u.path in ("/", "/index.html"):
+            return self._send_file(INDEX_FILE, "text/html; charset=utf-8")
         if u.path == "/api/stat":
             qs = parse_qs(u.query)
             raw = qs.get("path", [""])[0]
